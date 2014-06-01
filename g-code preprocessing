@@ -1,0 +1,308 @@
+#!/usr/bin/env python2
+#THIS IS A ConceptFORGE PRODUCT.
+#GPL LICENSE
+
+# Segmenter.py
+# Author: Niggle (aka Nigel Haslock)
+# Creation Date:  May 2014 
+# History
+#	Original code by Nicholas Seward
+
+# Usage:	Segmenter [{source gcode filename} [{segmented gcode filename}]] [-c {calibration filename}] [-s {segment size}]
+#				-s specifies the maximum size of a segment in millimeters
+#				-c specifies the name of a file holding the calibration results. If not specified, the program
+#					will use Calibration.GUS in the current directory.
+#				{source gcode filename}	If specified, the contents of the file are processed. If not specified,
+#					the user must enter both the input and output filenames. If omitted, the file extension is
+#					assumed to be .gcode
+#				{segmented gcode filename}	If specified, the segmented data is written to this file. If not
+#					specified, _GUS is added to the root of the source filename. The file extension is preserved.
+
+# By default, ALL LENGTHS ARE IN mm
+ModeMM = 1	# 1==Metric (mm's)		0==Imperial (inches)
+ModeAbs = 1	# 1==Use absolute coordinates  0==Use relative coordinates
+
+# Default distance between shoulder pivot points 
+#  (the centers of the bolts holding the shoulders to the bed)
+SIZE=250.0
+
+# Default maximum segment size. Can be altered on the command line
+#	Smaller => larger files
+#	Larger  => smaller files
+SEGMENT_SIZE=1.0
+
+def bailout(errortext):
+	print errortext
+	print "Either specify a valid calibration file or run Calibration.py"
+	print "with a good set of calibration points."
+	quit()
+
+import math, random, copy, sys
+inputfile = ""
+outputfile = ""
+calibfile = "Calibration.GUS"
+
+for i in range(len(sys.argv)):
+	if sys.argv[i]=="-c" and len(sys.argv)>i+1:
+		calibfile=sys.argv[i+1]
+	elif sys.argv[i]=="-s" and len(sys.argv)>i+1:
+		try:
+			SEGMENT_SIZE=float(sys.argv[i+1])
+		except:
+			print "Ignoring invalid -s option value " + sys.argv[i+1]
+			SEGMENT_SIZE = 1
+	elif sys.argv[i]==calibfile:
+		pass
+	elif inputfile == "":
+		inputfile = sys.argv[i]
+	elif outputfile == "":
+		outputfile = sys.argv[i]
+
+if inputfile == "":
+    inputfile = raw_input("Input File: ")
+    outputfile = raw_input("Output File: ")
+elif outputfile == "":
+	# This assumes that any path specification is free of periods
+    outputfile = inputfile.split(".")[0] + "-GUS.gcode"
+	
+try:
+	f = open(inputfile)
+	try:
+		f2 = open(outputfile, "w")
+		try:
+			calibdat = open(calibfile)
+		except:
+			bailout ( "File " + calibfile + " failed to open." )
+	except:
+		print "File " + outputfile + " failed to open. Exiting."
+		quit()
+except:
+	print "File " + inputfile + " failed to open. Exiting."
+	quit()
+
+# Parse calibration data and set the values.
+SHOULDER_Z1,SHOULDER_Z2,SHOULDER_Z3,MAX_LENGTH_1,MAX_LENGTH_2,MAX_LENGTH_3 = [0,0,0,0,0,0]
+for rawline in calibdat:
+	line = rawline.upper()
+	line = line.strip()
+	# skip comments and blank lines 
+	if line == "":
+		continue
+	if line[0] == "#" or line[0] == ";":
+		continue
+
+	# Payload?
+	chunks=line.split(",")	# [0].split(" ")
+	if len(chunks)<3:
+		print "Calibration data is invalid - expecting three values per line. " + rawline
+		continue
+	coords=[0,0,0]
+	j = 0
+	for chunk in chunks:
+		try:
+			coords[j]=float(chunk)
+			# This could be more restrictive.
+			# SHOULDER_Zn needs to be above 50 to avoid the singularity
+			# MAX LENGTH_n should be close to 290 for a standard GUS build
+			if coords[j] < 0:
+					bailout ( "Calibration data is invalid - value, " + chunk + ", must be positive." )
+				
+		except:
+			bailout ( "Calibration data is invalid - " + chunk + " is not a number." )
+		j += 1
+	if len(coords) == 3:
+		if SHOULDER_Z1 == 0:
+			SHOULDER_Z1 = coords[0]
+			SHOULDER_Z2 = coords[1]
+			SHOULDER_Z3 = coords[2]
+		elif MAX_LENGTH_1 == 0: 
+			MAX_LENGTH_1 = coords[0]
+			MAX_LENGTH_2 = coords[1]
+			MAX_LENGTH_3 = coords[2]
+		else:
+			bailout ( "Calibration datafile is invalid - too many values" )
+		
+calibdat.close()
+if MAX_LENGTH_3 == 0:
+	bailout ( "Calibration datafile is invalid - not enough data" )
+
+#GET COORDINATES USING TRILATERATION
+def getxyz(r1,r2,r3):
+    d=SIZE*1.0
+    i=SIZE/2.0
+    j=SIZE*math.sqrt(3)/2.0
+    x=(r1*r1-r2*r2+d*d)/(2*d)
+    y=(r1*r1-r3*r3-x*x+(x-i)**2+j*j)/(2*j)
+    zsq = r1*r1-x*x-y*y
+    if (zsq < 0.0):
+        print "getxyz() error, negative z^2 = ", zsq
+        return x,y,0
+    z=math.sqrt(r1*r1-x*x-y*y)
+    return x,y,z
+
+
+# Cartesian coordinates of the theoretical base points of the arms
+# with respect to [0,0,0], i.e. the center of the bed
+x1=-SIZE/2.0
+y1=-SIZE*math.sqrt(3)/2.0/3.0
+z1=-SHOULDER_Z1
+x2=+SIZE/2.0
+y2=-SIZE*math.sqrt(3)/2.0/3.0
+z2=-SHOULDER_Z2
+x3=0
+y3=2*SIZE*math.sqrt(3)/2.0/3.0
+z3=-SHOULDER_Z3
+x0,y0,z0=getxyz(MAX_LENGTH_1,MAX_LENGTH_2,MAX_LENGTH_3)
+
+# coord is used to keep track of the cartesian coordinates of the tip of the extruder, initially Home
+coord={"X":x0+x1,"Y":y0+y1,"Z":z0+z1, "E":0, "F":0}
+
+
+def getABC(position1):
+    if "X" not in position1:
+        return position1
+    position=copy.deepcopy(position1)
+    x,y,z,f=position["X"],position["Y"],position["Z"],position["F"]
+    a2=MAX_LENGTH_1-math.sqrt((x-x1)**2+(y-y1)**2+(z-z1)**2)
+    b2=MAX_LENGTH_2-math.sqrt((x-x2)**2+(y-y2)**2+(z-z2)**2)
+    c2=MAX_LENGTH_3-math.sqrt((x-x3)**2+(y-y3)**2+(z-z3)**2)
+    if position["E"]!=coord["E"]:
+        # Some extrusion so distance is important
+        d=distance(coord,position)
+        xs,ys,zs=coord["X"],coord["Y"],coord["Z"]
+        a1=MAX_LENGTH_1-math.sqrt((xs-x1)**2+(ys-y1)**2+(zs-z1)**2)
+        b1=MAX_LENGTH_2-math.sqrt((xs-x2)**2+(ys-y2)**2+(zs-z2)**2)
+        c1=MAX_LENGTH_3-math.sqrt((xs-x3)**2+(ys-y3)**2+(zs-z3)**2)
+        virtual_d=math.sqrt((a1-a2)**2+(b1-b2)**2+(c1-c2)**2)
+        fnew=f
+        if d!=0:
+            fnew=f*virtual_d/d
+            position['F']=fnew
+    position['X']=a2
+    position['Y']=b2
+    position['Z']=c2
+    return position
+
+def distance(start, end):
+    try:
+        x1,y1,z1=start['X'],start['Y'],start['Z']
+        x2,y2,z2=end['X'],end['Y'],end['Z']
+        return math.sqrt((x1-x2)**2+(y1-y2)**2+(z1-z2)**2)
+    except:
+        return 0
+
+def interpolate(start, end, i, n):
+    x1,y1,z1,e1=start['X'],start['Y'],start['Z'],start['E']
+    x2,y2,z2,e2=end['X'],end['Y'],end['Z'],end['E']
+    middle={}
+    for c in end:
+        if c in end and c in start and c!="F":
+            middle[c]=(i*end[c]+(n-i)*start[c])/n
+        else:
+            middle[c]=end[c]
+    return middle
+
+def segmentize(start,end,maxLength):
+    l=distance(start,end)
+    if l<=maxLength:
+        return [end]
+    else:
+        output=[]
+        n=int(math.ceil(l/maxLength))
+        for i in range(1,n+1):
+            output.append(interpolate(start,end,i,n))
+        return output
+
+prefixes="MGXYZESF"
+commands="MG"
+
+# Modified to move the extruder to Home before zero'ing the machine's internal coordinates
+f2.write("G1 X-1000 Y-1000 Z-1000\nG28\nG92 X0 Y0 Z0 E0\n")
+
+for rawline in f:
+    line=rawline.upper()
+    line=line.strip()
+    chunks=line.split(";")[0].split(" ")
+    stuff={}
+	# handle G0 G1 G2 G3 G20 G21 G28 G90 G91 G92
+	# let everything else pass through
+    if chunks[0]=="G0" or chunks[0]=="G1":
+        program=[]
+        move_count=0
+        for chunk in chunks:
+            if len(chunk)>1:
+                stuff[chunk[0]]=chunk[1:]
+                try:
+                    stuff[chunk[0]]=float(stuff[chunk[0]])
+                    if ModeMM==0:
+                        stuff[chunk[0]] *= 25.4	# Source is imperial so convert to mm
+                    if ModeAbs == 0:
+                        stuff[chunk[0]] += coord[chunk[0]]  # Add relative offset to current absolute
+                except:
+                    continue
+
+            if "X" in stuff or "Y" in stuff or "Z" in stuff:
+                move_count+=1
+                for c in coord:
+                    if c not in stuff:
+                        stuff[c]=coord[c]           
+        if move_count<=3 and len(stuff)>0:
+            program+=[stuff]
+        elif len(stuff)>0:
+            segments=segmentize(coord,stuff,SEGMENT_SIZE)
+            program+=segments
+        for c in coord:
+            if c in stuff:
+                coord[c]=stuff[c]
+        for line in program:
+            abcline=getABC(line)
+            for letter in prefixes:
+                if letter in abcline and letter in commands:
+                    f2.write(letter+str(abcline[letter])+" ")
+                elif letter in abcline:
+                    f2.write(letter+str(round(abcline[letter],3))+" ")
+            f2.write("\n")
+        rawline = "; " + rawline
+    elif chunks[0]=="G2" or chunks[0]=="G3":
+	    print "Ignoring arc request "+rawline
+    elif chunks[0]=="G20":
+        ModeMM = 0  # asserts that source values are in inches
+                    # however, output will remain in mm
+    elif chunks[0]=="G21":
+		ModeMM = 1	# asserts that source values are in mm
+    elif chunks[0]=="G28":
+        rawline = "G1 X0 Y0 Z0 ; G28"
+        coord["X"]=x0+x1
+        coord["Y"]=y0+y1
+        coord["Z"]=z0+z1
+    elif chunks[0]=="G90":
+        ModeAbs = 1
+    elif chunks[0]=="G91":
+        ModeAbs = 0     # Source specifies relative offsets
+                        # We will convert to absolute on the fly so our arithmetic works
+    elif chunks[0]=="G92":
+	    # Expect to see G92 E0 after every layer
+		# Any other use will do strange things to the coordinate system
+        for chunk in chunks:
+            if chunk == chunks[0]:
+                continue
+            elif len(chunk)>1:
+                if chunk[0]!="E":
+                    print "Unsafe use of G92 " + chunk
+                stuff[chunk[0]]=chunk[1:]
+                try:
+                    stuff[chunk[0]]=float(stuff[chunk[0]])
+                except:
+                    print "Unrecognised argument to G92, ignoring argument " + chunk
+                    continue
+            if "X" in stuff or "Y" in stuff or "Z" in stuff or "E" in stuff:
+                for c in coord:
+                    if c in stuff:
+                        coord[c]=stuff[c]
+    f2.write(rawline)
+#    f2.write("\n")
+
+
+f2.write("G1 X1 Y1 Z1\n")
+f2.close()
+print "done"
