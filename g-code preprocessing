@@ -43,6 +43,8 @@ outputfile = ""
 calibfile = "Calibration.GUS"
 
 for i in range(len(sys.argv)):
+	if i == 0:
+		continue
 	if sys.argv[i]=="-c" and len(sys.argv)>i+1:
 		calibfile=sys.argv[i+1]
 	elif sys.argv[i]=="-s" and len(sys.argv)>i+1:
@@ -271,7 +273,7 @@ for rawline in f:
     elif chunks[0]=="G21":
 		ModeMM = 1	# asserts that source values are in mm
     elif chunks[0]=="G28":
-        rawline = "G1 X0 Y0 Z0 ; G28"
+        rawline = "G1 X0 Y0 Z0 ; G28\n"
         coord["X"]=x0+x1
         coord["Y"]=y0+y1
         coord["Z"]=z0+z1
