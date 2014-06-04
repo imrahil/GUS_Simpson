@@ -99,18 +99,24 @@ for rawline in inpoints:
 	outcalib.write("# " + rawline)
 	line=rawline.upper()
 	line=line.strip()
-	if line[0]=="#" or line[0]==";":
+	if line == "":
 		continue
-	chunks=line.split(",")	# [0].split(" ")
-	if len(chunks)<3:
+	if line[0] == "#" or line[0] == ";":
 		continue
-	coords=[0,0,0]
-	j=0
-	for chunk in chunks:
-		coords[j]=num(chunk)
-		j+=1
-	if len(coords)<3:
-		print "Invalid line in Points file"
+	processed_line=""
+	flagSpace = int(0)
+	for letter in line:
+		if letter.isdigit() or letter == ".":
+			processed_line+=letter
+			flagSpace = 0
+		elif flagSpace == 0:
+			flagSpace = 1
+			processed_line += " "
+		else:
+			pass
+	coords = [float(i) for i in processed_line.split()]
+	if len(coords) != 3:
+		print "Invalid line " + line + " in Points file"
 	else:
 		# Is there a way to have POINTS be an array of objects rather than an array of floats?
 		POINTS+=coords
