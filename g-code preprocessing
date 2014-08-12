@@ -29,7 +29,7 @@ SIZE=250.0
 # Default maximum segment size. Can be altered on the command line
 #	Smaller => larger files
 #	Larger  => smaller files
-SEGMENT_SIZE=1.0
+SEGMENT_SIZE=0.5
 
 def bailout(errortext):
 	print errortext
@@ -219,7 +219,20 @@ prefixes="MGXYZESF"
 commands="MG"
 
 # Modified to move the extruder to Home before zero'ing the machine's internal coordinates
-f2.write("G1 X-1000 Y-1000 Z-1000\nG28\nG92 X0 Y0 Z0 E0\n")
+f2.write("G28\nG92 X0 Y0 Z0 E0\n")
+layer=0
+layercount=0
+
+for rawline in f:
+    line=rawline.upper()
+    line=line.strip()
+    chunks=line.split(";")[0].split(" ")
+    if chunks[0]=="M117":
+        layercount += 1
+        # print "layer: " + str(layer) + " / " + str(layercount)
+
+print "Layer count: " + str(layercount)
+f.seek(0)
 
 for rawline in f:
     line=rawline.upper()
@@ -301,6 +314,10 @@ for rawline in f:
                 for c in coord:
                     if c in stuff:
                         coord[c]=stuff[c]
+    elif chunks[0]=="M117":
+        layer += 1
+        rawline = "M117 Layer " + str(layer) + " of " + str(layercount) + "\n"
+
     f2.write(rawline)
 #    f2.write("\n")
 

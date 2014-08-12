@@ -32,8 +32,9 @@
 # All lengths are in mm
 POINTS=[]
 SIZE=250.0			# Distance between shoulder pivot bolts (i.e. the vertical bolts through the bed
-BED_Z=70			# Approximate vertical distance between arm pivot bolts when the extruder is touching the bed
-MAX_ARM_LENGTH=300	# Approximate straight line distance between arm pivot bolts when the endstop is triggered
+BED_Z=79.5			# Approximate vertical distance between arm pivot bolts when the extruder is touching the bed
+MAX_ARM_LENGTH=282	# Approximate straight line distance between arm pivot bolts when the endstop is triggered
+HEIGHT_COMPENSATION=0.1
 
 from scipy.optimize import leastsq
 import numpy.linalg
@@ -119,6 +120,9 @@ for rawline in inpoints:
 		print "Invalid line " + line + " in Points file"
 	else:
 		# Is there a way to have POINTS be an array of objects rather than an array of floats?
+		coords[0] += HEIGHT_COMPENSATION;
+		coords[1] += HEIGHT_COMPENSATION;
+		coords[2] += HEIGHT_COMPENSATION;
 		POINTS+=coords
 		pointcount+=1
 inpoints.close()
